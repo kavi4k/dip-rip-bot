@@ -70,6 +70,16 @@ async def tax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_tax_event(bot_state, amount, reason)
     await update.message.reply_text(f"🧾 Logged tax event: ${amount} – {reason}")
 
+async def shutdown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Cleanly stop trading + polling and then exit the process.
+    """
+    await update.message.reply_text("🛑 Shutting down bot…")
+    # first stop your trading loop
+    await stop_trading(bot_state)
+    # then stop the Telegram application’s polling
+    await context.application.stop()  # this will make run_polling() return
+
 # helper for crash alerts
 async def send_telegram_message(message: str):
     bot = Bot(token=TELEGRAM_TOKEN)
@@ -84,6 +94,7 @@ def main():
     app.add_handler(CommandHandler("resume", resume_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("tax", tax_command))
+    app.add_handler(CommandHandler("shutdown", shutdown_command))
 
     try:
         app.run_polling()
