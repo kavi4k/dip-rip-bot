@@ -1,98 +1,92 @@
-import os
-import time
+import asyncio
 import logging
-import traceback
+import os
 import signal
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import ccxt
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes, CallbackContext
+)
+from trading_logic import start_trading, stop_trading, get_status, log_tax_event
 
+# Load environment variables
 load_dotenv()
 
-# Environment Variables
+# Telegram settings
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Logging
-logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
+# Setup logging
+logging.basicConfig(
+    format='%(asctime)s %(levelname)s %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Global bot state
-RUNNING = True
-STATUS_MESSAGE = "Bot is running and monitoring prices."
+# Bot state
+bot_state = {
+    "is_running": False,
+    "last_status": "Idle",
+    "positions": {},
+    "tax_log": []
+}
 
-# Exchange Setup
-exchange = ccxt.binance({
-    'apiKey': os.getenv("API_KEY"),
-    'secret': os.getenv("API_SECRET"),
-    'enableRateLimit': True,
-    'options': { 'defaultType': 'spot' },
-})
+# Telegram commands
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bot_state["is_running"] = True
+    await update.message.reply_text("✅ Trading bot started.")
+    await start_trading(bot_state, update, context)
 
-# Telegram Commands
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"✅ {STATUS_MESSAGE if RUNNING else 'Bot is paused.'}")
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bot_state["is_running"] = False
+    await update.message.reply_text("⏸ Trading bot paused.")
+    await stop_trading(bot_state)
 
-async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global RUNNING
-    RUNNING = False
-    await update.message.reply_text("⏸️ Bot paused.")
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not bot_state["is_running"]:
+        bot_state["is_running"] = True
+        await update.message.reply_text("▶️ Trading bot resumed.")
+        await start_trading(bot_state, update, context)
+    else:
+        await update.message.reply_text("Bot is already running.")
 
-async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global RUNNING
-    RUNNING = True
-    await update.message.reply_text("▶️ Bot resumed.")
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"📊 Status: {bot_state['last_status']}\nPositions: {bot_state['positions']}")
 
-# Price Monitoring Loop
-def monitor_prices():
-    symbols = os.getenv("SYMBOLS", "BTC/USDT").split(',')
-    while True:
-        try:
-            if RUNNING:
-                for symbol in symbols:
-                    ticker = exchange.fetch_ticker(symbol)
-                    price = ticker['last']
-                    logger.info(f"{symbol}: {price}")
-            time.sleep(10)
-        except Exception as e:
-            error_msg = f"❗ Bot crashed: {str(e)}"
-            logger.error(traceback.format_exc())
-            send_telegram_alert(error_msg)
-            time.sleep(30)  # wait before retrying
+async def tax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("⚠️ Usage: /tax <amount> <reason>")
+        return
+    amount = args[0]
+    reason = " ".join(args[1:])
+    log_tax_event(bot_state, amount, reason)
+    await update.message.reply_text(f"🧾 Logged tax event: ${amount} - {reason}")
 
-# Telegram Crash Alert
-import requests
+async def send_telegram_message(message):
+    from telegram import Bot
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
-def send_telegram_alert(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        requests.post(url, data=data)
-    except Exception as e:
-        logger.error("Failed to send alert: " + str(e))
-
-# Signal Handling
-def shutdown_handler(signum, frame):
-    logger.info("Received shutdown signal")
-    send_telegram_alert("⚠️ Bot was terminated (manually or by system).")
-    exit(0)
-
-signal.signal(signal.SIGTERM, shutdown_handler)
-signal.signal(signal.SIGINT, shutdown_handler)
-
-# Telegram Bot Setup
 async def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("pause", pause))
-    application.add_handler(CommandHandler("resume", resume))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("pause", pause_command))
+    application.add_handler(CommandHandler("resume", resume_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("tax", tax_command))
 
-    await application.start()
-    send_telegram_alert("✅ Dip-Rip bot started and Telegram interface online.")
-    monitor_prices()
+    try:
+        await application.initialize()
+        await application.run_polling()
+    except Exception as e:
+        logger.exception("Unhandled error in main(): %s", str(e))
+        await send_telegram_message(f"🚨 Bot crashed with error:\n{e}")
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.exception("Fatal crash: %s", str(e))
+        asyncio.run(send_telegram_message(f"💥 Fatal crash: {e}"))
