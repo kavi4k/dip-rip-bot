@@ -1,3 +1,4 @@
+# crypto_trading_bot.py
 import os
 import asyncio
 import logging
@@ -10,20 +11,19 @@ from telegram.ext import (
 )
 from trading_logic import start_trading, stop_trading, get_status, log_tax_event
 
-# Load environment variables
+# load .env
 load_dotenv()
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Setup logging
+# logging
 logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Bot state
+# in‑memory state
 bot_state = {
     "is_running": False,
     "last_status": "Idle",
@@ -31,7 +31,7 @@ bot_state = {
     "tax_log": []
 }
 
-# ——— Telegram command handlers ———
+# ——— handlers ———
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_state["is_running"] = True
@@ -63,18 +63,18 @@ async def tax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = args[0]
     reason = " ".join(args[1:])
     log_tax_event(bot_state, amount, reason)
-    await update.message.reply_text(f"🧾 Logged tax event: ${amount} - {reason}")
+    await update.message.reply_text(f"🧾 Logged tax event: ${amount} – {reason}")
 
 async def send_telegram_message(message: str):
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
-# ——— Main application setup ———
+# ——— main ———
 
-async def main():
+def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # register handlers
+    # register commands
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("pause", pause_command))
     application.add_handler(CommandHandler("resume", resume_command))
@@ -82,17 +82,12 @@ async def main():
     application.add_handler(CommandHandler("tax", tax_command))
 
     try:
-        # note: initialize before polling
-        await application.initialize()
-        await application.run_polling()
+        # this call will block, handle init, polling, idle & shutdown correctly
+        application.run_polling()
     except Exception as e:
-        logger.exception("Unhandled error in main(): %s", e)
-        await send_telegram_message(f"🚨 Bot crashed with error:\n{e}")
+        logger.exception("Bot crashed: %s", e)
+        # send one final alert
+        asyncio.run(send_telegram_message(f"🚨 Bot crashed with error:\n{e}"))
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.exception("Fatal crash: %s", e)
-        # if main loop failed completely, send one more alert
-        asyncio.run(send_telegram_message(f"💥 Fatal crash: {e}"))
+    main()
