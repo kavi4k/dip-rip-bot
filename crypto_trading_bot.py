@@ -1,18 +1,18 @@
+import os
 import asyncio
 import logging
-import os
-import signal
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, CallbackContext
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes
 )
 from trading_logic import start_trading, stop_trading, get_status, log_tax_event
 
 # Load environment variables
 load_dotenv()
 
-# Telegram settings
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -31,7 +31,8 @@ bot_state = {
     "tax_log": []
 }
 
-# Telegram commands
+# ——— Telegram command handlers ———
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_state["is_running"] = True
     await update.message.reply_text("✅ Trading bot started.")
@@ -51,7 +52,8 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Bot is already running.")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📊 Status: {bot_state['last_status']}\nPositions: {bot_state['positions']}")
+    summary = await get_status(bot_state)
+    await update.message.reply_text(f"📊 {summary}")
 
 async def tax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -63,14 +65,16 @@ async def tax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_tax_event(bot_state, amount, reason)
     await update.message.reply_text(f"🧾 Logged tax event: ${amount} - {reason}")
 
-async def send_telegram_message(message):
-    from telegram import Bot
+async def send_telegram_message(message: str):
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+# ——— Main application setup ———
 
 async def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("pause", pause_command))
     application.add_handler(CommandHandler("resume", resume_command))
@@ -78,15 +82,17 @@ async def main():
     application.add_handler(CommandHandler("tax", tax_command))
 
     try:
+        # note: initialize before polling
         await application.initialize()
         await application.run_polling()
     except Exception as e:
-        logger.exception("Unhandled error in main(): %s", str(e))
+        logger.exception("Unhandled error in main(): %s", e)
         await send_telegram_message(f"🚨 Bot crashed with error:\n{e}")
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except Exception as e:
-        logger.exception("Fatal crash: %s", str(e))
+        logger.exception("Fatal crash: %s", e)
+        # if main loop failed completely, send one more alert
         asyncio.run(send_telegram_message(f"💥 Fatal crash: {e}"))
